@@ -14,6 +14,7 @@ import 'package:immich_mobile/shared/services/api.service.dart';
 import 'package:immich_mobile/utils/db.dart';
 import 'package:immich_mobile/utils/hash.dart';
 import 'package:isar/isar.dart';
+import 'package:logging/logging.dart';
 import 'package:openapi/api.dart';
 
 class AuthenticationNotifier extends StateNotifier<AuthenticationState> {
@@ -36,6 +37,7 @@ class AuthenticationNotifier extends StateNotifier<AuthenticationState> {
 
   final ApiService _apiService;
   final Isar _db;
+  final _log = Logger("AuthenticationNotifier");
 
   Future<bool> login(
     String email,
@@ -92,21 +94,29 @@ class AuthenticationNotifier extends StateNotifier<AuthenticationState> {
     }
   }
 
-  Future<bool> logout() async {
+  Future<void> logout() async {
+    var log = Logger('AuthenticationNotifier');
     try {
+
+      String? userEmail = Store.tryGet(StoreKey.currentUser)?.email;
+
+      _apiService.authenticationApi
+          .logout()
+          .then((_) => log.info("Logout was successfull for $userEmail"))
+          .onError(
+            (error, stackTrace) =>
+                log.severe("Error logging out $userEmail", error, stackTrace),
+          );
+
       await Future.wait([
-        _apiService.authenticationApi.logout(),
         clearAssetsAndAlbums(_db),
         Store.delete(StoreKey.currentUser),
         Store.delete(StoreKey.accessToken),
       ]);
 
       state = state.copyWith(isAuthenticated: false);
-
-      return true;
     } catch (e) {
-      debugPrint("Error logging out $e");
-      return false;
+      log.severe("Error logging out $e");
     }
   }
 
@@ -136,38 +146,66 @@ class AuthenticationNotifier extends StateNotifier<AuthenticationState> {
   Future<bool> setSuccessLoginInfo({
     required String accessToken,
     required String serverUrl,
+    bool offlineLogin = false,
   }) async {
     _apiService.setAccessToken(accessToken);
-    UserResponseDto? userResponseDto;
-    try {
-      userResponseDto = await _apiService.userApi.getMyUserInfo();
-    } on ApiException catch (e) {
-      if (e.innerException is SocketException) {
-        state = state.copyWith(isAuthenticated: true);
+
+    // Get the deviceid from the store if it exists, otherwise generate a new one
+    String deviceId =
+        Store.tryGet(StoreKey.deviceId) ?? await FlutterUdid.consistentUdid;
+
+    bool shouldChangePassword = false;
+    User? user;
+
+    bool retResult = false;
+    User? offlineUser = Store.tryGet(StoreKey.currentUser);
+
+    // If the user is offline and there is a user saved on the device,
+    // if not try an online login
+    if (offlineLogin && offlineUser != null) {
+      user = offlineUser;
+      retResult = false;
+    } else {
+      UserResponseDto? userResponseDto;
+      try {
+        userResponseDto = await _apiService.userApi.getMyUserInfo();
+      } on ApiException catch (e) {
+        if (e.innerException is SocketException) {
+          state = state.copyWith(isAuthenticated: true);
+        }
+      }
+
+      if (userResponseDto != null) {
+        Store.put(StoreKey.deviceId, deviceId);
+        Store.put(StoreKey.deviceIdHash, fastHash(deviceId));
+        Store.put(StoreKey.currentUser, User.fromDto(userResponseDto));
+        Store.put(StoreKey.serverUrl, serverUrl);
+        Store.put(StoreKey.accessToken, accessToken);
+
+        shouldChangePassword = userResponseDto.shouldChangePassword;
+        user = User.fromDto(userResponseDto);
+
+        retResult = true;
+      }
+      else {
+        _log.severe("Unable to get user information from the server.");
+        return false;
       }
     }
 
-    if (userResponseDto != null) {
-      final deviceId = await FlutterUdid.consistentUdid;
-      Store.put(StoreKey.deviceId, deviceId);
-      Store.put(StoreKey.deviceIdHash, fastHash(deviceId));
-      Store.put(StoreKey.currentUser, User.fromDto(userResponseDto));
-      Store.put(StoreKey.serverUrl, serverUrl);
-      Store.put(StoreKey.accessToken, accessToken);
+    state = state.copyWith(
+      isAuthenticated: true,
+      userId: user.id,
+      userEmail: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profileImagePath: user.profileImagePath,
+      isAdmin: user.isAdmin,
+      shouldChangePassword: shouldChangePassword,
+      deviceId: deviceId,
+    );
 
-      state = state.copyWith(
-        isAuthenticated: true,
-        userId: userResponseDto.id,
-        userEmail: userResponseDto.email,
-        firstName: userResponseDto.firstName,
-        lastName: userResponseDto.lastName,
-        profileImagePath: userResponseDto.profileImagePath,
-        isAdmin: userResponseDto.isAdmin,
-        shouldChangePassword: userResponseDto.shouldChangePassword,
-        deviceId: deviceId,
-      );
-    }
-    return true;
+    return retResult;
   }
 }
 

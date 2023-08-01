@@ -1,6 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
-  assetEntityStub,
+  assetStub,
   authStub,
   faceStub,
   newJobRepositoryMock,
@@ -8,7 +8,8 @@ import {
   newStorageRepositoryMock,
   personStub,
 } from '@test';
-import { IJobRepository, JobName } from '..';
+import { BulkIdErrorReason } from '../asset';
+import { IJobRepository, JobName } from '../job';
 import { IStorageRepository } from '../storage';
 import { PersonResponseDto } from './person.dto';
 import { IPersonRepository } from './person.repository';
@@ -18,6 +19,7 @@ const responseDto: PersonResponseDto = {
   id: 'person-1',
   name: 'Person 1',
   thumbnailPath: '/path/to/thumbnail.jpg',
+  isHidden: false,
 };
 
 describe(PersonService.name, () => {
@@ -40,7 +42,37 @@ describe(PersonService.name, () => {
   describe('getAll', () => {
     it('should get all people with thumbnails', async () => {
       personMock.getAll.mockResolvedValue([personStub.withName, personStub.noThumbnail]);
-      await expect(sut.getAll(authStub.admin)).resolves.toEqual([responseDto]);
+      await expect(sut.getAll(authStub.admin, { withHidden: undefined })).resolves.toEqual({
+        total: 1,
+        visible: 1,
+        people: [responseDto],
+      });
+      expect(personMock.getAll).toHaveBeenCalledWith(authStub.admin.id, { minimumFaceCount: 1 });
+    });
+    it('should get all visible people with thumbnails', async () => {
+      personMock.getAll.mockResolvedValue([personStub.withName, personStub.hidden]);
+      await expect(sut.getAll(authStub.admin, { withHidden: false })).resolves.toEqual({
+        total: 2,
+        visible: 1,
+        people: [responseDto],
+      });
+      expect(personMock.getAll).toHaveBeenCalledWith(authStub.admin.id, { minimumFaceCount: 1 });
+    });
+    it('should get all hidden and visible people with thumbnails', async () => {
+      personMock.getAll.mockResolvedValue([personStub.withName, personStub.hidden]);
+      await expect(sut.getAll(authStub.admin, { withHidden: true })).resolves.toEqual({
+        total: 2,
+        visible: 1,
+        people: [
+          responseDto,
+          {
+            id: 'person-1',
+            name: '',
+            thumbnailPath: '/path/to/thumbnail.jpg',
+            isHidden: true,
+          },
+        ],
+      });
       expect(personMock.getAll).toHaveBeenCalledWith(authStub.admin.id, { minimumFaceCount: 1 });
     });
   });
@@ -80,7 +112,7 @@ describe(PersonService.name, () => {
 
   describe('getAssets', () => {
     it("should return a person's assets", async () => {
-      personMock.getAssets.mockResolvedValue([assetEntityStub.image, assetEntityStub.video]);
+      personMock.getAssets.mockResolvedValue([assetStub.image, assetStub.video]);
       await sut.getAssets(authStub.admin, 'person-1');
       expect(personMock.getAssets).toHaveBeenCalledWith('admin_id', 'person-1');
     });
@@ -98,7 +130,7 @@ describe(PersonService.name, () => {
     it("should update a person's name", async () => {
       personMock.getById.mockResolvedValue(personStub.noName);
       personMock.update.mockResolvedValue(personStub.withName);
-      personMock.getAssets.mockResolvedValue([assetEntityStub.image]);
+      personMock.getAssets.mockResolvedValue([assetStub.image]);
 
       await expect(sut.update(authStub.admin, 'person-1', { name: 'Person 1' })).resolves.toEqual(responseDto);
 
@@ -106,7 +138,22 @@ describe(PersonService.name, () => {
       expect(personMock.update).toHaveBeenCalledWith({ id: 'person-1', name: 'Person 1' });
       expect(jobMock.queue).toHaveBeenCalledWith({
         name: JobName.SEARCH_INDEX_ASSET,
-        data: { ids: [assetEntityStub.image.id] },
+        data: { ids: [assetStub.image.id] },
+      });
+    });
+
+    it('should update a person visibility', async () => {
+      personMock.getById.mockResolvedValue(personStub.hidden);
+      personMock.update.mockResolvedValue(personStub.withName);
+      personMock.getAssets.mockResolvedValue([assetStub.image]);
+
+      await expect(sut.update(authStub.admin, 'person-1', { isHidden: false })).resolves.toEqual(responseDto);
+
+      expect(personMock.getById).toHaveBeenCalledWith('admin_id', 'person-1');
+      expect(personMock.update).toHaveBeenCalledWith({ id: 'person-1', isHidden: false });
+      expect(jobMock.queue).toHaveBeenCalledWith({
+        name: JobName.SEARCH_INDEX_ASSET,
+        data: { ids: [assetStub.image.id] },
       });
     });
 
@@ -141,6 +188,16 @@ describe(PersonService.name, () => {
     });
   });
 
+  describe('updateAll', () => {
+    it('should throw an error when personId is invalid', async () => {
+      personMock.getById.mockResolvedValue(null);
+      await expect(
+        sut.updatePeople(authStub.admin, { people: [{ id: 'person-1', name: 'Person 1' }] }),
+      ).resolves.toEqual([{ error: BulkIdErrorReason.UNKNOWN, id: 'person-1', success: false }]);
+      expect(personMock.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handlePersonCleanup', () => {
     it('should delete people without faces', async () => {
       personMock.getAllWithoutFaces.mockResolvedValue([personStub.noName]);
@@ -152,6 +209,87 @@ describe(PersonService.name, () => {
         name: JobName.DELETE_FILES,
         data: { files: ['/path/to/thumbnail.jpg'] },
       });
+    });
+  });
+
+  describe('mergePerson', () => {
+    it('should merge two people', async () => {
+      personMock.getById.mockResolvedValueOnce(personStub.primaryPerson);
+      personMock.getById.mockResolvedValueOnce(personStub.mergePerson);
+      personMock.prepareReassignFaces.mockResolvedValue([]);
+      personMock.delete.mockResolvedValue(personStub.mergePerson);
+
+      await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).resolves.toEqual([
+        { id: 'person-2', success: true },
+      ]);
+
+      expect(personMock.prepareReassignFaces).toHaveBeenCalledWith({
+        newPersonId: personStub.primaryPerson.id,
+        oldPersonId: personStub.mergePerson.id,
+      });
+
+      expect(personMock.reassignFaces).toHaveBeenCalledWith({
+        newPersonId: personStub.primaryPerson.id,
+        oldPersonId: personStub.mergePerson.id,
+      });
+
+      expect(personMock.delete).toHaveBeenCalledWith(personStub.mergePerson);
+    });
+
+    it('should delete conflicting faces before merging', async () => {
+      personMock.getById.mockResolvedValue(personStub.primaryPerson);
+      personMock.getById.mockResolvedValue(personStub.mergePerson);
+      personMock.prepareReassignFaces.mockResolvedValue([assetStub.image.id]);
+
+      await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).resolves.toEqual([
+        { id: 'person-2', success: true },
+      ]);
+
+      expect(personMock.prepareReassignFaces).toHaveBeenCalledWith({
+        newPersonId: personStub.primaryPerson.id,
+        oldPersonId: personStub.mergePerson.id,
+      });
+
+      expect(jobMock.queue).toHaveBeenCalledWith({
+        name: JobName.SEARCH_REMOVE_FACE,
+        data: { assetId: assetStub.image.id, personId: personStub.mergePerson.id },
+      });
+    });
+
+    it('should throw an error when the primary person is not found', async () => {
+      personMock.getById.mockResolvedValue(null);
+
+      await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+
+      expect(personMock.delete).not.toHaveBeenCalled();
+    });
+
+    it('should handle invalid merge ids', async () => {
+      personMock.getById.mockResolvedValueOnce(personStub.primaryPerson);
+      personMock.getById.mockResolvedValueOnce(null);
+
+      await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).resolves.toEqual([
+        { id: 'person-2', success: false, error: BulkIdErrorReason.NOT_FOUND },
+      ]);
+
+      expect(personMock.prepareReassignFaces).not.toHaveBeenCalled();
+      expect(personMock.reassignFaces).not.toHaveBeenCalled();
+      expect(personMock.delete).not.toHaveBeenCalled();
+    });
+
+    it('should handle an error reassigning faces', async () => {
+      personMock.getById.mockResolvedValue(personStub.primaryPerson);
+      personMock.getById.mockResolvedValue(personStub.mergePerson);
+      personMock.prepareReassignFaces.mockResolvedValue([assetStub.image.id]);
+      personMock.reassignFaces.mockRejectedValue(new Error('update failed'));
+
+      await expect(sut.mergePerson(authStub.admin, 'person-1', { ids: ['person-2'] })).resolves.toEqual([
+        { id: 'person-2', success: false, error: BulkIdErrorReason.UNKNOWN },
+      ]);
+
+      expect(personMock.delete).not.toHaveBeenCalled();
     });
   });
 });

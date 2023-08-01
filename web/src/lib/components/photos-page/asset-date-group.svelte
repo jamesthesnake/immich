@@ -1,24 +1,18 @@
 <script lang="ts">
-  import {
-    assetInteractionStore,
-    assetSelectionCandidates,
-    assetsInAlbumStoreState,
-    isMultiSelectStoreState,
-    selectedAssets,
-    selectedGroup,
-  } from '$lib/stores/asset-interaction.store';
-  import { assetStore } from '$lib/stores/assets.store';
   import { locale } from '$lib/stores/preferences.store';
+  import { getAssetRatio } from '$lib/utils/asset-utils';
+  import { formatGroupTitle, splitBucketIntoDateGroups } from '$lib/utils/timeline-util';
   import type { AssetResponseDto } from '@api';
   import justifiedLayout from 'justified-layout';
-  import lodash from 'lodash-es';
+  import { DateTime } from 'luxon';
   import { createEventDispatcher } from 'svelte';
   import CheckCircle from 'svelte-material-icons/CheckCircle.svelte';
   import CircleOutline from 'svelte-material-icons/CircleOutline.svelte';
   import { fly } from 'svelte/transition';
-  import { DateTime, Interval } from 'luxon';
-  import { getAssetRatio } from '$lib/utils/asset-utils';
   import Thumbnail from '../assets/thumbnail/thumbnail.svelte';
+  import { assetViewingStore } from '$lib/stores/asset-viewing.store';
+  import type { AssetStore } from '$lib/stores/assets.store';
+  import type { AssetInteractionStore } from '$lib/stores/asset-interaction.store';
 
   export let assets: AssetResponseDto[];
   export let bucketDate: string;
@@ -26,12 +20,11 @@
   export let isAlbumSelectionMode = false;
   export let viewportWidth: number;
 
-  const groupDateFormat: Intl.DateTimeFormatOptions = {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  };
+  export let assetStore: AssetStore;
+  export let assetInteractionStore: AssetInteractionStore;
+
+  const { selectedGroup, selectedAssets, assetsInAlbumState, assetSelectionCandidates, isMultiSelectState } =
+    assetInteractionStore;
 
   const dispatch = createEventDispatcher();
 
@@ -45,11 +38,7 @@
     width: number;
   }
 
-  $: assetsGroupByDate = lodash
-    .chain(assets)
-    .groupBy((a) => new Date(a.fileCreatedAt).toLocaleDateString($locale, groupDateFormat))
-    .sortBy((group) => assets.indexOf(group[0]))
-    .value();
+  $: assetsGroupByDate = splitBucketIntoDateGroups(assets, $locale);
 
   $: geometry = (() => {
     const geometry = [];
@@ -105,10 +94,10 @@
       return;
     }
 
-    if ($isMultiSelectStoreState) {
+    if ($isMultiSelectState) {
       assetSelectHandler(asset, assetsInDateGroup, dateGroupTitle);
     } else {
-      assetInteractionStore.setViewingAsset(asset);
+      assetViewingStore.setAssetId(asset.id);
     }
   };
 
@@ -131,17 +120,7 @@
     assetsInDateGroup: AssetResponseDto[],
     dateGroupTitle: string,
   ) => {
-    if ($selectedAssets.has(asset)) {
-      for (const candidate of $assetSelectionCandidates || []) {
-        assetInteractionStore.removeAssetFromMultiselectGroup(candidate);
-      }
-      assetInteractionStore.removeAssetFromMultiselectGroup(asset);
-    } else {
-      for (const candidate of $assetSelectionCandidates || []) {
-        assetInteractionStore.addAssetToMultiselectGroup(candidate);
-      }
-      assetInteractionStore.addAssetToMultiselectGroup(asset);
-    }
+    dispatch('selectAssets', { asset });
 
     // Check if all assets are selected in a group to toggle the group selection's icon
     let selectedAssetsInGroupCount = assetsInDateGroup.filter((asset) => $selectedAssets.has(asset)).length;
@@ -158,44 +137,9 @@
     // Show multi select icon on hover on date group
     hoveredDateGroup = dateGroupTitle;
 
-    if ($isMultiSelectStoreState) {
+    if ($isMultiSelectState) {
       dispatch('selectAssetCandidates', { asset });
     }
-  };
-
-  const formatGroupTitle = (date: DateTime): string => {
-    const today = DateTime.now().startOf('day');
-
-    // Today
-    if (today.hasSame(date, 'day')) {
-      return 'Today';
-    }
-
-    // Yesterday
-    if (Interval.fromDateTimes(date, today).length('days') == 1) {
-      return 'Yesterday';
-    }
-
-    // Last week
-    if (Interval.fromDateTimes(date, today).length('weeks') < 1) {
-      return date.toLocaleString({ weekday: 'long' });
-    }
-
-    // This year
-    if (today.hasSame(date, 'year')) {
-      return date.toLocaleString({
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-      });
-    }
-
-    return date.toLocaleString({
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
   };
 </script>
 
@@ -209,8 +153,9 @@
     {@const dateGroupTitle = formatGroupTitle(DateTime.fromISO(assetsInDateGroup[0].fileCreatedAt).startOf('day'))}
     <!-- Asset Group By Date -->
 
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div
-      class="flex flex-col mt-5"
+      class="mt-5 flex flex-col"
       on:mouseenter={() => {
         isMouseOverGroup = true;
         assetMouseEventHandler(dateGroupTitle, null);
@@ -222,7 +167,7 @@
     >
       <!-- Date group title -->
       <p
-        class="font-medium text-xs md:text-sm text-immich-fg dark:text-immich-dark-fg mb-2 flex place-items-center h-6"
+        class="mb-2 flex h-6 place-items-center text-xs font-medium text-immich-fg dark:text-immich-dark-fg md:text-sm"
         style="width: {geometry[groupIndex].containerWidth}px"
       >
         {#if (hoveredDateGroup == dateGroupTitle && isMouseOverGroup) || $selectedGroup.has(dateGroupTitle)}
@@ -240,7 +185,7 @@
           </div>
         {/if}
 
-        <span class="first-letter:capitalize truncate" title={dateGroupTitle}>
+        <span class="truncate first-letter:capitalize" title={dateGroupTitle}>
           {dateGroupTitle}
         </span>
       </p>
@@ -262,9 +207,9 @@
               on:click={() => assetClickHandler(asset, assetsInDateGroup, dateGroupTitle)}
               on:select={() => assetSelectHandler(asset, assetsInDateGroup, dateGroupTitle)}
               on:mouse-event={() => assetMouseEventHandler(dateGroupTitle, asset)}
-              selected={$selectedAssets.has(asset) || $assetsInAlbumStoreState.some(({ id }) => id === asset.id)}
+              selected={$selectedAssets.has(asset) || $assetsInAlbumState.some(({ id }) => id === asset.id)}
               selectionCandidate={$assetSelectionCandidates.has(asset)}
-              disabled={$assetsInAlbumStoreState.some(({ id }) => id === asset.id)}
+              disabled={$assetsInAlbumState.some(({ id }) => id === asset.id)}
               thumbnailWidth={box.width}
               thumbnailHeight={box.height}
             />

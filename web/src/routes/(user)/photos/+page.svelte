@@ -10,22 +10,26 @@
   import AssetGrid from '$lib/components/photos-page/asset-grid.svelte';
   import AssetSelectContextMenu from '$lib/components/photos-page/asset-select-context-menu.svelte';
   import AssetSelectControlBar from '$lib/components/photos-page/asset-select-control-bar.svelte';
-  import { assetInteractionStore, isMultiSelectStoreState, selectedAssets } from '$lib/stores/asset-interaction.store';
-  import { assetStore } from '$lib/stores/assets.store';
+  import EmptyPlaceholder from '$lib/components/shared-components/empty-placeholder.svelte';
+  import { createAssetStore } from '$lib/stores/assets.store';
+  import { createAssetInteractionStore } from '$lib/stores/asset-interaction.store';
+  import { openFileUploadDialog } from '$lib/utils/file-uploader';
+  import { api } from '@api';
   import { onDestroy, onMount } from 'svelte';
   import DotsVertical from 'svelte-material-icons/DotsVertical.svelte';
   import Plus from 'svelte-material-icons/Plus.svelte';
   import type { PageData } from './$types';
-  import { api } from '@api';
-  import EmptyPlaceholder from '$lib/components/shared-components/empty-placeholder.svelte';
-  import { openFileUploadDialog } from '$lib/utils/file-uploader';
 
   export let data: PageData;
   let assetCount = 1;
 
+  const assetStore = createAssetStore();
+  const assetInteractionStore = createAssetInteractionStore();
+  const { isMultiSelectState, selectedAssets } = assetInteractionStore;
+
   onMount(async () => {
-    const { data: allAssetCount } = await api.assetApi.getAssetCountByUserId();
-    assetCount = allAssetCount.total;
+    const { data: stats } = await api.assetApi.getAssetStats();
+    assetCount = stats.total;
   });
 
   onDestroy(() => {
@@ -39,12 +43,12 @@
   };
 </script>
 
-<UserPageLayout user={data.user} hideNavbar={$isMultiSelectStoreState} showUploadButton>
+<UserPageLayout user={data.user} hideNavbar={$isMultiSelectState} showUploadButton>
   <svelte:fragment slot="header">
-    {#if $isMultiSelectStoreState}
+    {#if $isMultiSelectState}
       <AssetSelectControlBar assets={$selectedAssets} clearSelect={assetInteractionStore.clearMultiselect}>
         <CreateSharedLink />
-        <SelectAllAssets />
+        <SelectAllAssets {assetStore} {assetInteractionStore} />
         <AssetSelectContextMenu icon={Plus} title="Add">
           <AddToAlbum />
           <AddToAlbum shared />
@@ -60,7 +64,7 @@
   </svelte:fragment>
   <svelte:fragment slot="content">
     {#if assetCount}
-      <AssetGrid showMemoryLane />
+      <AssetGrid {assetStore} {assetInteractionStore} showMemoryLane />
     {:else}
       <EmptyPlaceholder text="CLICK TO UPLOAD YOUR FIRST PHOTO" actionHandler={handleUpload} />
     {/if}

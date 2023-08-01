@@ -18,6 +18,7 @@ class ThumbnailImage extends HookConsumerWidget {
   final bool multiselectEnabled;
   final Function? onSelect;
   final Function? onDeselect;
+  final int heroOffset;
 
   const ThumbnailImage({
     Key? key,
@@ -31,15 +32,26 @@ class ThumbnailImage extends HookConsumerWidget {
     this.multiselectEnabled = false,
     this.onDeselect,
     this.onSelect,
+    this.heroOffset = 0,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isDarkTheme = Theme.of(context).brightness == Brightness.dark;
+    final assetContainerColor =
+        isDarkTheme ? Colors.blueGrey : Theme.of(context).primaryColorLight;
+
     Widget buildSelectionIcon(Asset asset) {
       if (isSelected) {
-        return Icon(
-          Icons.check_circle,
-          color: Theme.of(context).primaryColor,
+        return Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: assetContainerColor,
+          ),
+          child: Icon(
+            Icons.check_circle_rounded,
+            color: Theme.of(context).primaryColor,
+          ),
         );
       } else {
         return const Icon(
@@ -47,6 +59,36 @@ class ThumbnailImage extends HookConsumerWidget {
           color: Colors.white,
         );
       }
+    }
+
+    Widget buildImage(Asset asset) {
+      var image = ImmichImage(
+        asset,
+        width: 300,
+        height: 300,
+        useGrayBoxPlaceholder: useGrayBoxPlaceholder,
+      );
+      if (!multiselectEnabled || !isSelected) {
+        return image;
+      }
+      return Container(
+        decoration: BoxDecoration(
+          border: Border.all(
+            width: 0,
+            color: assetContainerColor,
+          ),
+          color: assetContainerColor,
+        ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.only(
+            topRight: Radius.circular(15.0),
+            bottomRight: Radius.circular(15.0),
+            bottomLeft: Radius.circular(15.0),
+            topLeft: Radius.zero,
+          ),
+          child: image,
+        ),
+      );
     }
 
     return GestureDetector(
@@ -63,6 +105,7 @@ class ThumbnailImage extends HookConsumerWidget {
               initialIndex: index,
               loadAsset: loadAsset,
               totalAssets: totalAssets,
+              heroOffset: heroOffset,
             ),
           );
         }
@@ -72,32 +115,7 @@ class ThumbnailImage extends HookConsumerWidget {
         HapticFeedback.heavyImpact();
       },
       child: Hero(
-        createRectTween: (begin, end) {
-          double? top;
-          // Uses the [BoxFit.contain] algorithm
-          if (asset.width != null && asset.height != null) {
-            final assetAR = asset.width! / asset.height!;
-            final w = MediaQuery.of(context).size.width;
-            final deviceAR = MediaQuery.of(context).size.aspectRatio;
-            if (deviceAR < assetAR) {
-              top = asset.height! * w / asset.width!;
-            } else {
-              top = 0;
-            }
-            // get the height offset
-          }
-
-          return MaterialRectCenterArcTween(
-            begin: Rect.fromLTRB(
-              0,
-              top ?? 0.0,
-              MediaQuery.of(context).size.width,
-              MediaQuery.of(context).size.height,
-            ),
-            end: end,
-          );
-        },
-        tag: asset.id,
+        tag: asset.id + heroOffset,
         child: Stack(
           children: [
             Container(
@@ -106,17 +124,12 @@ class ThumbnailImage extends HookConsumerWidget {
                     ? Border.all(
                         color: onDeselect == null
                             ? Colors.grey
-                            : Theme.of(context).primaryColorLight,
-                        width: 10,
+                            : assetContainerColor,
+                        width: 8,
                       )
                     : const Border(),
               ),
-              child: ImmichImage(
-                asset,
-                width: 300,
-                height: 300,
-                useGrayBoxPlaceholder: useGrayBoxPlaceholder,
-              ),
+              child: buildImage(asset),
             ),
             if (multiselectEnabled)
               Padding(
